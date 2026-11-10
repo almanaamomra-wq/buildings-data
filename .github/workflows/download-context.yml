@@ -1,0 +1,52 @@
+name: download-context
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install overturemaps geopandas pyarrow shapely
+      - name: Download context layers
+        run: |
+          mkdir -p ctx
+          python - <<'PY'
+          import subprocess, math, geopandas as gpd, pandas as pd
+          REG = {"ahsa": "48.70,22.90,51.55,26.10", "jeddah": "38.90,21.05,39.60,22.40"}
+          TYPES = {"land_use": ["subtype", "class"], "place": ["categories"], "segment": ["subtype", "class"], "building": ["subtype", "class", "num_floors", "height"]}
+          for name, bbox in REG.items():
+              for t, cols in TYPES.items():
+                  raw = f"/tmp/{name}_{t}.parquet"
+                  try:
+                      subprocess.run(["overturemaps", "download", f"--bbox={bbox}", "-f", "geoparquet", f"--type={t}", "-o", raw], check=True)
+                      g = gpd.read_parquet(raw)
+                  except Exception as ex:
+                      print("skip", name, t, ex, flush=True)
+                      continue
+                  keep = [c for c in cols if c in g.columns]
+                  g = g[keep + ["geometry"]].copy()
+                  if "categories" in g.columns:
+                      g["cat"] = g["categories"].apply(lambda c: c.get("primary") if isinstance(c, dict) else None)
+                      g = g.drop(columns=["categories"])
+                  g["cx"] = g.geometry.centroid.x
+                  g = g.sort_values("cx").drop(columns="cx").reset_index(drop=True)
+                  print(name, t, len(g), list(g.columns), flush=True)
+                  k = max(1, math.ceil(len(g) / 120000))
+                  step = math.ceil(len(g) / k)
+                  for i in range(k):
+                      g.iloc[i * step:(i + 1) * step].to_parquet(f"ctx/{name}_{t}_{i}.parquet", compression="zstd")
+          PY
+          du -sh ctx/*
+      - name: Commit
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add ctx
+          git commit -m "Add context layers (Overture)"
+          git pull --rebase
+          git push
