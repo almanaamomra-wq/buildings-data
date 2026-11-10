@@ -1,0 +1,34 @@
+name: download-buildings
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install overturemaps geopandas pyarrow shapely
+      - name: Download and split
+        run: |
+          mkdir -p data
+          python - <<'PY'
+          import subprocess, math, os, geopandas as gpd
+          REG = {"ahsa": "48.70,22.90,51.55,26.10", "jeddah": "38.90,21.05,39.60,22.40"}
+          for name, bbox in REG.items():
+              raw = f"/tmp/{name}.parquet"
+              subprocess.run(["overturemaps","download",f"--bbox={bbox}","-f","geoparquet","--type=building","-o",raw], check=True)
+              g = gpd.read_parquet(raw)[["geometry"]]
+              g["cx"] = g.geometry.centroid.x
+              g = g.sort_values("cx").drop(columns="cx").reset_index(drop=True)
+              print(name, len(g), flush=True)
+              k = max(1, math.ceil(len(g)/250000))
+              step = math.ceil(len(g)/k)
+              for i in range(k):
+                  part = g.iloc[i*step:(i+1)*step]
+                  part.to_parquet(f"data/{name}_{i}.parquet", compression="zstd")
+          PY
+          du -sh data/*
