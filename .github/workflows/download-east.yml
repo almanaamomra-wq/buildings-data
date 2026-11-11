@@ -1,0 +1,50 @@
+name: download-east
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install overturemaps geopandas pyarrow shapely
+      - name: Download buildings
+        run: |
+          mkdir -p data
+          python - <<'PY'
+          import subprocess, geopandas as gpd
+          REG = {
+              "east0": "48.08,26.68,48.42,27.02",
+              "east1": "46.88,26.88,47.12,27.32",
+              "east2": "48.38,27.18,48.52,27.32",
+              "east3": "48.38,27.38,48.62,27.62",
+              "east4": "46.78,27.38,46.92,27.52",
+              "east5": "47.58,27.48,47.72,27.62",
+              "east6": "47.18,27.48,47.32,27.62",
+              "east7": "46.78,27.58,46.92,27.72",
+              "east8": "48.28,28.28,48.62,28.52",
+              "east9": "49.38,25.78,49.72,26.12",
+              "east10": "49.78,25.98,50.32,26.82",
+              "east11": "48.58,26.58,48.72,26.72",
+              "east12": "49.48,26.78,49.92,27.12"
+          }
+          for name, bbox in REG.items():
+              raw = f"/tmp/{name}.parquet"
+              subprocess.run(["overturemaps","download",f"--bbox={bbox}","-f","geoparquet","--type=building","-o",raw], check=True)
+              g = gpd.read_parquet(raw)[["geometry"]]
+              print(name, len(g), flush=True)
+              g.to_parquet(f"data/{name}.parquet", compression="zstd")
+          PY
+          du -sh data/east*
+      - name: Commit
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add data
+          git commit -m "Add Eastern Province building footprints"
+          git pull --rebase
+          git push
