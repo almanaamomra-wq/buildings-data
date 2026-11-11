@@ -1,0 +1,58 @@
+name: download-divisions
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install overturemaps geopandas pyarrow shapely
+      - name: Download divisions
+        run: |
+          mkdir -p div
+          python - <<'PY'
+          import subprocess, geopandas as gpd
+          REG = {"ksa": "34.40,16.30,55.80,32.30"}
+          for name, bbox in REG.items():
+              for t in ["division_area", "division"]:
+                  raw = f"/tmp/{name}_{t}.parquet"
+                  try:
+                      subprocess.run(["overturemaps","download",f"--bbox={bbox}","-f","geoparquet",f"--type={t}","-o",raw], check=True)
+                      g = gpd.read_parquet(raw)
+                  except Exception as ex:
+                      print("skip", name, t, ex, flush=True)
+                      continue
+                  def nm(n, k):
+                      if not isinstance(n, dict): return None
+                      if k == "primary": return n.get("primary")
+                      c = n.get("common")
+                      try:
+                          c = dict(c) if c is not None else {}
+                      except Exception:
+                          c = {}
+                      return c.get(k)
+                  out = gpd.GeoDataFrame({
+                      "subtype": g["subtype"] if "subtype" in g.columns else None,
+                      "name": g["names"].apply(lambda n: nm(n, "primary")),
+                      "name_ar": g["names"].apply(lambda n: nm(n, "ar")),
+                  }, geometry=g.geometry, crs=g.crs)
+                  print(name, t, len(out), out["subtype"].value_counts().to_dict(), flush=True)
+                  out = out.assign(cx=out.geometry.centroid.x).sort_values("cx").drop(columns="cx").reset_index(drop=True)
+                  step = 60000
+                  for i in range(0, max(1, len(out)), step):
+                      out.iloc[i:i+step].to_parquet(f"div/{name}_{t}_{i//step}.parquet", compression="zstd")
+          PY
+          du -sh div/*
+      - name: Commit
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add div
+          git commit -m "Add Overture divisions"
+          git pull --rebase
+          git push
