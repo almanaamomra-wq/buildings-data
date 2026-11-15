@@ -1,0 +1,52 @@
+name: download-buildings-v2
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install overturemaps geopandas pyarrow shapely
+      - name: Download buildings for every line in bboxes.txt
+        run: |
+          mkdir -p data
+          python - <<'PY'
+          import subprocess, geopandas as gpd, pandas as pd, collections, os
+          groups = collections.defaultdict(list)
+          import glob
+          lines = []
+          for fn in sorted(glob.glob("bboxes*.txt")):
+              lines += open(fn, encoding="utf-8").read().splitlines()
+          for line in dict.fromkeys(lines):
+              line = line.strip()
+              if not line: continue
+              name, bbox = line.split()
+              amana = name.rsplit("_", 1)[0]
+              out = f"/tmp/{name}.parquet"
+              if os.path.exists(f"data/{amana}.parquet"): continue
+              for attempt in range(3):
+                  r = subprocess.run(["overturemaps","download",f"--bbox={bbox}","-f","geoparquet","--type=building","-o",out])
+                  if r.returncode == 0: break
+              if os.path.exists(out):
+                  g = gpd.read_parquet(out)[["id","geometry"]]
+                  print(name, len(g), flush=True)
+                  groups[amana].append(g)
+          for amana, parts in groups.items():
+              g = pd.concat(parts).drop_duplicates("id")
+              gpd.GeoDataFrame(g, geometry="geometry", crs=4326).to_parquet(f"data/{amana}.parquet", compression="zstd")
+              print("saved", amana, len(g), flush=True)
+          PY
+          du -sh data/*
+      - name: Commit
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add data
+          git commit -m "Add building footprints" || echo "nothing to commit"
+          git push
